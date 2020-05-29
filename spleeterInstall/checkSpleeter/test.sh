@@ -1,12 +1,29 @@
 #!/bin/bash
-export LD_LIBRARY_PATH=./ffmpegKit/lib:${LD_LIBRARY_PATH}
+
+#安装yum install libva
+export LD_LIBRARY_PATH=./FFmpegKit/lib:${LD_LIBRARY_PATH}
 testFileDir=$PWD/testFile
 transcodeDir=$PWD/testResult/transcode
 onlyH264Dir=$PWD/testResult/onlyH264
 audioOutputDir=$PWD/testResult/audioOutput
 newMp4Dir=$PWD/testResult/newMp4
 logDir=$PWD/log
+infoLog=$PWD/log/info.log
+FFmpegKitDir=$PWD/FFmpegKit
+x264BitrateCtl="-b:v 1500k -preset superfast"
 videoCount=0
+
+#状态码
+FAIL_BITRATE_CONTROL=20 #码率控制失败
+
+FAIL_TRANSCODE=30 #转码失败
+
+FAIL_SEPRATE_BACGROUND_MUSIC=40 #分离背景音乐失败
+
+FAIL_MERGE_VIDEO_AND_AUDIO=50 #合并视频和北京音乐失败
+
+FAIL_REMOVE_OLD_MUSIC=60 #去除原声失败
+
 
 #log path is $PWD/log
 #if commod execute sucessed,it will return 0 else return 1
@@ -18,11 +35,11 @@ function log_info() {
 }
 
 function log_error() {
+     # echo -e "\033[41;37m $1 码率控制失败 in getX264BitrateCtl \033[0m" 1>>${infoLog} 2>&1
     DATE_N=$(date "+%Y-%m-%d %H:%M:%S")
     USER_N=$(whoami)
-    echo -e "\033[41;37m ${DATE_N} ${USER_N} execute $0 [ERROR] $@ \033[0m" >>$logDir/error.log #执行失败日志打印路径
-    echo "">>${logDir}/error.log 
-
+    # echo -e "\033[41;37m ${DATE_N} ${USER_N} execute $0 [ERROR] $@ \033[0m" >>$logDir/info.log 
+    echo -e "${DATE_N} ${USER_N} execute $0 [ERROR] $@" >>$logDir/info.log 
 }
 
 function fn_log() {
@@ -37,22 +54,27 @@ function fn_log() {
 }
 trap 'fn_log "DO NOT SEND CTR + C WHEN EXECUTE SCRIPT !!!! "' 2
 
-function Combine() {
-    runTime "$1" "转码时间：" "$5" "转码"
-    runTime "$2" "去除原声时间：" "$5" "去除原声"
-    runTime "$3" "分离出背景音乐时间：" "$5" "分离出背景音乐"
-    runTime "$4" "合并视频和背景音乐时间：" "$5" "合并视频和背景音乐"
-}
-
 function runTime() {
     startTime=$(date +%Y%m%d-%H:%M)
     startTime_s=$(date +%s)
     $1
-    fn_log "$5 $4"
+    if [ ! $? -eq 0 ]; then
+        log_error $3 $4 "失败"
+        exit $5
+    fi
+    log_info $3 $4 "成功"
     endTime=$(date +%Y%m%d-%H:%M)
     endTime_s=$(date +%s)
     sumTime=$(($endTime_s - $startTime_s))
     fn_log "$3 $2:$sumTime seconds"
+}
+
+
+function Combine() {
+    runTime "$1" "转码时间：" "$5" "转码" "${FAIL_TRANSCODE}"
+    runTime "$2" "去除原声时间：" "$5" "去除原声" "${FAIL_REMOVE_OLD_MUSIC}" 
+    runTime "$3" "分离出背景音乐时间：" "$5" "分离出背景音乐" "${FAIL_SEPRATE_BACGROUND_MUSIC}"
+    runTime "$4" "合并视频和背景音乐时间：" "$5" "合并视频和背景音乐" "${FAIL_MERGE_VIDEO_AND_AUDIO}"
 }
 
 function checkDir()
@@ -72,6 +94,28 @@ function checkAllDir()
     checkDir "${logDir}"
 }
 
+#码率控制
+function getX264BitrateCtl()
+{
+    level=`${FFmpegKitDir}/bitrateCtl $1` 1>>${infoLog} 2>&1
+    if [ ! $? -eq 0 ]; then
+        log_error "$1 码率控制失败 in getX264BitrateCtl"
+        exit ${FAIL_BITRATE_CONTROL}
+    fi
+    if (( level <= 360 )); then
+        x264BitrateCtl="-b:v 600k -preset superfast"
+    elif (( level <= 480 )); then
+        x264BitrateCtl="-b:v 800k -preset superfast"
+    elif (( level <= 720 )); then
+        x264BitrateCtl="-b:v 1200k -preset superfast"
+    else
+        x264BitrateCtl="-b:v 1500k -preset superfast"
+    fi
+
+    log_info "$1 码率控制成功，参数为${x264BitrateCtl}" 
+}
+
+
 function startTest() 
 {
     checkAllDir
@@ -81,10 +125,15 @@ function startTest()
     # $PWD/ffmpegKit/getDurationOfVideo ${testFileDir}/${item} 
     # duration=`echo $?`
 
+    #码率控制
+    # getX264BitrateCtl ${testFileDir}/${item}
+    # echo ${x264BitrateCtl}
     startTimeAll=$(date +%Y%m%d-%H:%M)
     startTimeAll_s=$(date +%s)
 
-    getConvertToMp4CMd="ffmpeg -y -i ${testFileDir}/${item} -c:v libx264 -x264opts keyint=8:min-keyint=8 -r 24 -c:a aac ${transcodeDir}/${fileName}.mp4"
+    #产生cmd
+    getConvertToMp4CMd="ffmpeg -hwaccel auto -y -i ${testFileDir}/${item} -c:v libx264 ${x264BitrateCtl} -x264opts keyint=8:min-keyint=8 -r 24 -c:a aac ${transcodeDir}/${fileName}.mp4"
+    # echo ${getConvertToMp4CMd}
     getH264OfVideoCmd="ffmpeg -y -i ${transcodeDir}/${fileName}.mp4 -c:v copy -an -sn -dn ${onlyH264Dir}/${fileName}.mp4"
     getBackMp3Cmd="spleeter separate -i ${testFileDir}/${item}  -c mp3 -o ${audioOutputDir}"
     getCombineCmd="ffmpeg -y -i ${onlyH264Dir}/${fileName}.mp4 -i ${audioOutputDir}/${fileName}/accompaniment.mp3 -filter_complex [1:a]aloop=loop=0:size=2e+09 -c:v copy ${newMp4Dir}/${fileName}.mp4"
@@ -103,5 +152,3 @@ function startTest()
 }
 
 startTest "$testFileDir"
-
-
